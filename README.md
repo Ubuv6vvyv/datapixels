@@ -23,7 +23,7 @@ This project solves both directions without external servers or APIs:
 | **Mobile Decode Time** | ~40 ms in C via `fitz.xref_stream` | < 150 ms across 6 frames on Android/iOS |
 
 ## 10-Second Browser Test (No Python Required)
-1. Open the live browser decoder at `https://<your-username>.github.io/<repo-name>/viewer_dln1.html` (enable **GitHub Pages → Deploy from branch `main` / `(root)`** in repository settings), or download `viewer_dln1.html` and double-click it locally.
+1. Open the live browser decoder at `https://Ubuv6vvyv.github.io/datapixels/viewer_dln1.html` (enable **GitHub Pages → Deploy from branch `main` / `(root)`** in repository settings), or download `viewer_dln1.html` and double-click it locally.
 2. Download `examples/sample_dln1_whatsapp_sim.jpg` from this repository.
 3. Select `sample_dln1_whatsapp_sim.jpg` inside the viewer—it decodes the JPEG-degraded 1-bit tiles, verifies the payload, and lets you download the reconstructed output immediately.
 
