@@ -1,0 +1,31 @@
+{
+  "suite": "LLMPv2 + DLN1 Round-Trip Verification",
+  "elapsed_seconds": 0.234,
+  "corpus": {
+    "csv_path": "/storage/emulated/0/Download/llmp-pixel-drive/test_corpus/dummy_telemetry.csv",
+    "csv_rows": 5673,
+    "csv_bytes": 627583,
+    "md_bytes": 432,
+    "json_bytes": 157
+  },
+  "inbound_llmpv2": {
+    "raw_total_bytes": 628172,
+    "compressed_frame_bytes": 72429,
+    "compression_ratio_pct": 11.53,
+    "image_dimensions": "512x176",
+    "pdf_bytes": 67685,
+    "png_bytes": 85463,
+    "frame_sha256": "9acc57b19abbde1b78d863a4c9ee781841ff3da79ecab31a11c10285aadf0323",
+    "verified_via": "PIL.Image (PNG fallback)",
+    "all_file_hashes_match": true
+  },
+  "outbound_dln1": {
+    "original_json_bytes": 894,
+    "deflated_bytes": 305,
+    "tile_grid": "64x64 (8x8 px tiles = 512x512 px)",
+    "simulated_whatsapp_jpeg_bytes": 6721,
+    "jpeg_compression_settings": "quality=70, subsampling=2 (4:2:0)",
+    "json_sha256": "31f8677131ef640ca26ee0f8bae123ac8096a0f44239f41cafd3c7b423f58f15",
+    "bit_exact_recovery_after_jpeg": true
+  }
+}

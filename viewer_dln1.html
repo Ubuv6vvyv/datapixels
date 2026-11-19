@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DLN1 1-Bit Archive Reconstructor</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#ffd400;--ok:#3fb950;--warn:#f85149}
+  *{box-sizing:border-box}
+  body{margin:0;padding:12px;background:var(--bg);color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.4}
+  .hdr{background:var(--accent);color:#000;padding:10px 12px;border-radius:6px;font-weight:700;margin-bottom:10px}
+  .hdr small{display:block;font-weight:400;font-size:11px;margin-top:2px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px}
+  .drop-btn{display:block;width:100%;padding:14px;background:#1f2937;border:2px dashed var(--accent);border-radius:6px;color:var(--accent);text-align:center;font-weight:700;font-size:13px;cursor:pointer}
+  input[type=file]{display:none}
+  .row-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  button{background:#21262d;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:8px 12px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer}
+  button.primary{background:var(--ok);color:#000;border-color:var(--ok)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px}
+  .stat-box{background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:6px 8px;text-align:center}
+  .stat-box b{display:block;font-size:14px;color:var(--accent)}
+  .log{max-height:160px;overflow-y:auto;font-size:11px;white-space:pre-wrap;color:var(--muted)}
+  .log .ok{color:var(--ok)} .log .err{color:var(--warn)}
+  pre{margin:0;max-height:50vh;overflow:auto;background:#0d1117;border:1px solid var(--border);border-radius:5px;padding:8px;font-size:11px;white-space:pre-wrap;word-break:break-word;color:var(--text)}
+</style>
+</head>
+<body>
+<div class="hdr">DLN1 1-BIT ARCHIVE RECONSTRUCTOR<small>Select DLN1 JPEGs/PNGs in order (01 → N) to rebuild and download output</small></div>
+
+<div class="card">
+  <label class="drop-btn" for="fileInput">+ SELECT DLN1 IMAGES IN ORDER</label>
+  <input id="fileInput" type="file" accept="image/*" multiple>
+  <div class="row-btns">
+    <button id="btnDownload" class="primary" disabled>Download Output</button>
+    <button id="btnCopy" disabled>Copy Output</button>
+    <button id="btnClear">Clear</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="stats">
+    <div class="stat-box"><b id="stParts">0</b>Parts Decoded</div>
+    <div class="stat-box"><b id="stBytes">0</b>Total Bytes</div>
+    <div class="stat-box"><b id="stType">-</b>Detected Type</div>
+  </div>
+  <div id="log" class="log">Ready. Select 1 or more DLN1 images in order.</div>
+</div>
+
+<div class="card" id="previewCard" style="display:none">
+  <div style="margin-bottom:6px;color:var(--muted)">Output Preview (first 8,000 chars):</div>
+  <pre id="previewBox"></pre>
+</div>
+
+<script>
+const fileInput = document.getElementById("fileInput"),
+      logEl = document.getElementById("log"),
+      btnDownload = document.getElementById("btnDownload"),
+      btnCopy = document.getElementById("btnCopy"),
+      btnClear = document.getElementById("btnClear"),
+      previewCard = document.getElementById("previewCard"),
+      previewBox = document.getElementById("previewBox");
+
+const sharedCanvas = document.createElement("canvas");
+const sharedCtx = sharedCanvas.getContext("2d", { willReadFrequently: true, alpha: false });
+
+let joinedText = "", detectedExt = "txt", detectedMime = "text/plain";
+
+function appendLog(msg, cls = "") {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = msg;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+const tick = () => new Promise(r => setTimeout(r, 0));
+
+async function inflateStream(b) {
+  const fmt = (b[0] === 0x78) ? "deflate" : "deflate-raw";
+  const ds = new DecompressionStream(fmt);
+  const w = ds.writable.getWriter();
+  w.write(b);
+  w.close();
+  return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+}
+
+function sampleTileGridFast(img, W, H, TILE) {
+  const rCnt = Math.floor(H / TILE), cCnt = Math.floor(W / TILE);
+  sharedCanvas.width = cCnt;
+  sharedCanvas.height = rCnt;
+  sharedCtx.imageSmoothingEnabled = false;
+  sharedCtx.drawImage(img, 0, 0, cCnt, rCnt);
+  let rgba = sharedCtx.getImageData(0, 0, cCnt, rCnt).data;
+
+  let syncOk = true;
+  for (let c = 0; c < Math.min(16, cCnt); c++) {
+    const bit = rgba[c * 4] > 128 ? 1 : 0;
+    if (bit !== (c & 1)) { syncOk = false; break; }
+  }
+  if (syncOk) return { rgba, rCnt, cCnt, stride: 1, rowStride: cCnt };
+
+  sharedCanvas.width = W;
+  sharedCanvas.height = H;
+  sharedCtx.drawImage(img, 0, 0);
+  rgba = sharedCtx.getImageData(0, 0, W, H).data;
+  return { rgba, rCnt, cCnt, stride: TILE, rowStride: W * TILE, offset: 4 * W + 4 };
+}
+
+async function decodeSingleImage(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => {
+      const im = new Image();
+      im.onload = () => res(im);
+      im.onerror = () => rej(new Error("Image load failed"));
+      im.src = url;
+    });
+    const W = img.naturalWidth, H = img.naturalHeight, TILE = 8;
+    const { rgba, rCnt, cCnt, stride, rowStride, offset = 0 } = sampleTileGridFast(img, W, H, TILE);
+
+    const dataTiles = (rCnt - 1) * cCnt;
+    const byteLen = dataTiles >> 3;
+    const bytes = new Uint8Array(byteLen);
+    let outIdx = 0;
+
+    if (stride === 1 && (cCnt & 7) === 0) {
+      for (let r = 1; r < rCnt; r++) {
+        let p = r * rowStride * 4;
+        for (let c = 0; c < cCnt; c += 8) {
+          bytes[outIdx++] =
+            ((rgba[p] > 128) << 7) |
+            ((rgba[p + 4] > 128) << 6) |
+            ((rgba[p + 8] > 128) << 5) |
+            ((rgba[p + 12] > 128) << 4) |
+            ((rgba[p + 16] > 128) << 3) |
+            ((rgba[p + 20] > 128) << 2) |
+            ((rgba[p + 24] > 128) << 1) |
+            (rgba[p + 28] > 128);
+          p += 32;
+        }
+      }
+    } else {
+      let bitBuf = 0, bitCnt = 0;
+      for (let r = 1; r < rCnt; r++) {
+        for (let c = 0; c < cCnt; c++) {
+          const p = (offset + r * rowStride + c * stride) * 4;
+          bitBuf = (bitBuf << 1) | (rgba[p] > 128 ? 1 : 0);
+          if (++bitCnt === 8) {
+            bytes[outIdx++] = bitBuf;
+            bitBuf = 0;
+            bitCnt = 0;
+          }
+        }
+      }
+    }
+
+    const magic = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+    if (magic !== "DLN1") throw new Error(`Invalid magic '${magic}' - expected 'DLN1'`);
+
+    const clen = ((bytes[4] << 24) | (bytes[5] << 16) | (bytes[6] << 8) | bytes[7]) >>> 0;
+    if (8 + clen > bytes.length) throw new Error(`Truncated payload: need ${8 + clen}B, got ${bytes.length}B`);
+
+    const comp = bytes.subarray(8, 8 + clen);
+    const inflated = await inflateStream(comp);
+    return {
+      name: file.name,
+      dims: `${W}x${H}`,
+      rawBytes: inflated.length,
+      text: new TextDecoder("utf-8").decode(inflated)
+    };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+fileInput.addEventListener("change", async e => {
+  const files = Array.from(e.target.files || []);
+  e.target.value = "";
+  if (!files.length) return;
+
+  const t0 = performance.now();
+  logEl.innerHTML = "";
+  appendLog(`Decoding ${files.length} image(s) in selection order...`);
+  await tick();
+
+  const decoded = [];
+  let totalBytes = 0;
+  for (const f of files) {
+    try {
+      const r = await decodeSingleImage(f);
+      decoded.push(r);
+      totalBytes += r.rawBytes;
+      appendLog(`[OK] ${f.name} (${r.dims}) -> ${r.rawBytes.toLocaleString()} bytes`, "ok");
+    } catch (err) {
+      appendLog(`[ERR] ${f.name}: ${err.message}`, "err");
+    }
+    await tick();
+  }
+  if (!decoded.length) return;
+
+  joinedText = decoded.map(d => d.text).join("");
+
+  try {
+    JSON.parse(joinedText);
+    detectedExt = "json";
+    detectedMime = "application/json";
+  } catch (_) {
+    detectedExt = "txt";
+    detectedMime = "text/plain";
+  }
+
+  document.getElementById("stParts").textContent = decoded.length;
+  document.getElementById("stBytes").textContent = totalBytes.toLocaleString();
+  document.getElementById("stType").textContent = detectedExt.toUpperCase();
+
+  btnDownload.textContent = `Download Output (.${detectedExt})`;
+  btnDownload.disabled = false;
+  btnCopy.disabled = false;
+
+  previewBox.textContent = joinedText.slice(0, 8000) + (joinedText.length > 8000 ? "\n\n... [truncated in preview; full file ready to download]" : "");
+  previewCard.style.display = "block";
+
+  const ms = Math.round(performance.now() - t0);
+  appendLog(`DONE in ${ms}ms: ${decoded.length} part(s) joined (${totalBytes.toLocaleString()} bytes, .${detectedExt}).`, "ok");
+});
+
+btnDownload.addEventListener("click", () => {
+  if (!joinedText) return;
+  const blob = new Blob([joinedText], { type: detectedMime });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `dln1_output.${detectedExt}`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+});
+
+btnCopy.addEventListener("click", async () => {
+  if (!joinedText) return;
+  await navigator.clipboard.writeText(joinedText);
+  btnCopy.textContent = "Copied!";
+  setTimeout(() => btnCopy.textContent = "Copy Output", 1500);
+});
+
+btnClear.addEventListener("click", () => {
+  joinedText = "";
+  detectedExt = "txt";
+  detectedMime = "text/plain";
+  previewBox.textContent = "";
+  previewCard.style.display = "none";
+  btnDownload.textContent = "Download Output";
+  btnDownload.disabled = true;
+  btnCopy.disabled = true;
+  document.getElementById("stParts").textContent = "0";
+  document.getElementById("stBytes").textContent = "0";
+  document.getElementById("stType").textContent = "-";
+  logEl.textContent = "Cleared.";
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLMPv2 Browser Packer</title>
+<style>
+  body { font-family: monospace; max-width: 900px; margin: 16px auto; padding: 0 12px; line-height: 1.4; }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  p.sub { color: #555; margin-top: 0; font-size: 12px; }
+  fieldset { border: 1px solid #999; margin-bottom: 12px; padding: 10px; }
+  legend { font-weight: bold; }
+  label { display: block; margin: 6px 0 4px; font-weight: bold; }
+  textarea { width: 100%; box-sizing: border-box; font-family: monospace; font-size: 12px; padding: 6px; }
+  input[type="text"], input[type="number"] { font-family: monospace; padding: 4px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  button { font-family: monospace; padding: 6px 12px; cursor: pointer; font-weight: bold; }
+  canvas { max-width: 100%; height: auto; border: 1px solid #333; image-rendering: pixelated; display: block; margin-top: 8px; }
+  #status { font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+
+<h1>LLMPv2 Browser Packer (1x1 Native RGB)</h1>
+<p class="sub">Packs files and/or pasted text into a lossless LLMPv2 PNG + PDF cartridge and generates the sandbox manifest.</p>
+
+<fieldset>
+  <legend>1. Input Sources</legend>
+  <label for="fileInput">Select Files (optional, multiple allowed):</label>
+  <input id="fileInput" type="file" multiple>
+
+  <label for="pasteName">Pasted Text Filename:</label>
+  <input id="pasteName" type="text" value="pasted_notes.txt" size="28">
+
+  <label for="pasteText">Paste Text / CSV / Code (optional):</label>
+  <textarea id="pasteText" rows="6" placeholder="Paste raw text, prompts, JSON, or CSV rows here..."></textarea>
+
+  <div class="row">
+    <label style="margin:0">Block size (KB): <input id="blockKb" type="number" value="500" min="16" max="4096" style="width:70px"></label>
+    <button id="btnPack" type="button">Pack to Canvas &amp; Manifest</button>
+    <button id="btnClear" type="button">Clear</button>
+  </div>
+  <div id="status">Ready.</div>
+</fieldset>
+
+<fieldset id="outSection" style="display:none">
+  <legend>2. Manifest &amp; Sandbox Decoder</legend>
+  <div class="row" style="margin-top:0; margin-bottom:6px">
+    <button id="btnCopyManifest" type="button">Copy Manifest</button>
+    <button id="btnDownloadManifest" type="button">Download Manifest (.txt)</button>
+  </div>
+  <textarea id="manifestOut" rows="14" readonly></textarea>
+</fieldset>
+
+<fieldset id="canvasSection" style="display:none">
+  <legend>3. Rendered LLMPv2 Cartridge (PNG Canvas)</legend>
+  <div class="row" style="margin-top:0">
+    <button id="btnDownloadPng" type="button">Download PNG</button>
+    <button id="btnDownloadPdf" type="button">Download PDF (WhatsApp-Safe)</button>
+  </div>
+  <canvas id="outCanvas"></canvas>
+</fieldset>
+
+<script>
+const HEADER_H = 128;
+const MAX_EDGE = 2048;
+
+const fileInput = document.getElementById("fileInput");
+const pasteName = document.getElementById("pasteName");
+const pasteText = document.getElementById("pasteText");
+const blockKbInput = document.getElementById("blockKb");
+const statusEl = document.getElementById("status");
+const outSection = document.getElementById("outSection");
+const canvasSection = document.getElementById("canvasSection");
+const manifestOut = document.getElementById("manifestOut");
+const outCanvas = document.getElementById("outCanvas");
+
+let currentStem = "llmp_bundle";
+let currentPdfBytes = null;
+
+// Pure-JS SHA-256 so file:// local usage works without HTTPS crypto.subtle restrictions
+function sha256Hex(bytes) {
+  const K = new Uint32Array([
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+  ]);
+  const H = new Uint32Array([
+    0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19
+  ]);
+  const l = bytes.length;
+  const bitLenHi = Math.floor((l * 8) / 0x100000000);
+  const bitLenLo = (l * 8) >>> 0;
+  const padLen = (((l + 8) >> 6) + 1) << 6;
+  const msg = new Uint8Array(padLen);
+  msg.set(bytes);
+  msg[l] = 0x80;
+  const dv = new DataView(msg.buffer);
+  dv.setUint32(padLen - 8, bitLenHi, false);
+  dv.setUint32(padLen - 4, bitLenLo, false);
+
+  const W = new Uint32Array(64);
+  const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+  for (let off = 0; off < padLen; off += 64) {
+    for (let i = 0; i < 16; i++) W[i] = dv.getUint32(off + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(W[i - 15], 7) ^ rotr(W[i - 15], 18) ^ (W[i - 15] >>> 3);
+      const s1 = rotr(W[i - 2], 17) ^ rotr(W[i - 2], 19) ^ (W[i - 2] >>> 10);
+      W[i] = (W[i - 16] + s0 + W[i - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K[i] + W[i]) >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0;
+      d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0;
+    H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+    H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0;
+    H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
+  }
+  return Array.from(H).map(x => x.toString(16).padStart(8, "0")).join("");
+}
+
+async function zlibCompress(uint8Arr) {
+  const cs = new CompressionStream("deflate");
+  const w = cs.writable.getWriter();
+  w.write(uint8Arr);
+  w.close();
+  return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+}
+
+function solveDimensions(frameLen) {
+  const logicalPx = Math.ceil(frameLen / 3);
+  const candidates = [512, 768, 1024, 1280, 1536, 1792, 2048];
+  let best = null;
+  for (const w of candidates) {
+    const gridH = Math.max(32, Math.ceil(logicalPx / w));
+    const imgH = HEADER_H + gridH;
+    if (imgH <= MAX_EDGE) {
+      const score = Math.abs(Math.log((w / imgH) / 1.6));
+      if (!best || score < best.score) best = { imgW: w, imgH, gridH, score };
+    }
+  }
+  if (!best) throw new Error(`Compressed frame (${frameLen} B) exceeds 2048x2048 single-part limit.`);
+  return best;
+}
+
+async function buildLosslessPdf(rgbBytes, w, h) {
+  const compRgb = await zlibCompress(rgbBytes);
+  const enc = new TextEncoder();
+  const phdr = new Uint8Array([0x25,0x50,0x44,0x46,0x2d,0x31,0x2e,0x34,0x0a,0x25,0xe2,0xe3,0xcf,0xd3,0x0a]);
+  const o1 = enc.encode("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+  const o2 = enc.encode("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+  const o3 = enc.encode(`3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n`); const o4h = enc.encode(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length${compRgb.length} >>\nstream\n`);
+  const o4f = enc.encode("\nendstream\nendobj\n");
+  const cs = enc.encode(`q ${w} 0 0${h} 0 0 cm /Im0 Do Q\n`);
+  const o5 = concatBytes([enc.encode(`5 0 obj\n<< /Length ${cs.length} >>\nstream\n`), cs, enc.encode("endstream\nendobj\n")]);  const offs = []; let pos = phdr.length; for (const sz of [o1.length, o2.length, o3.length, o4h.length + compRgb.length + o4f.length, o5.length]) { offs.push(pos); pos += sz; } let xref = `xref\n0 6\n0000000000 65535 f \n`; for (const o of offs) xref += `${String(o).padStart(10, "0")} 00000 n \n`;
+  xref += `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${pos}\n\%\%EOF\n`;  return concatBytes([phdr, o1, o2, o3, o4h, compRgb, o4f, o5, enc.encode(xref)]); }  function concatBytes(arrays) { const total = arrays.reduce((s, a) => s + a.length, 0); const out = new Uint8Array(total); let off = 0; for (const a of arrays) { out.set(a, off); off += a.length; } return out; }  function fmtBytes(n) { if (n < 1024) return `${n}B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)}KB`; return `${(n / 1048576).toFixed(2)}MB`;
+}
+
+document.getElementById("btnPack").addEventListener("click", async () => {
+  try {
+    statusEl.textContent = "Reading inputs...";
+    const enc = new TextEncoder();
+    const entries = [];
+
+    for (const f of Array.from(fileInput.files || [])) {
+      const buf = new Uint8Array(await f.arrayBuffer());
+      if (buf.length > 0) entries.push({ name: f.name, bytes: buf });
+    }
+
+    const rawPaste = pasteText.value;
+    if (rawPaste.trim().length > 0) {
+      const pname = (pasteName.value || "pasted_notes.txt").trim();
+      entries.push({ name: pname, bytes: enc.encode(rawPaste) });
+    }
+
+    if (!entries.length) {
+      statusEl.textContent = "Add at least one file or paste some text first.";
+      return;
+    }
+
+    const maxBlockBytes = Math.max(16, parseInt(blockKbInput.value || "500", 10)) * 1024;
+    let offset = 0;
+    const tocFiles = [];
+    const blobParts = [];
+
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      tocFiles.push({
+        global_idx: i,
+        name: e.name,
+        offset,
+        len: e.bytes.length,
+        sha256: sha256Hex(e.bytes)
+      });
+      blobParts.push(e.bytes);
+      offset += e.bytes.length;
+    }
+
+    // Build logical blocks
+    const blocks = [];
+    let curStart = 0, curBytes = 0;
+    for (let i = 0; i < tocFiles.length; i++) {
+      const flen = tocFiles[i].len;
+      if (curBytes > 0 && curBytes + flen > maxBlockBytes) {
+        const bnum = blocks.length + 1;
+        blocks.push({
+          block_num: bnum,
+          block_id: `INDEX_${String(bnum).padStart(2, "0")}`, global_file_start: curStart, global_file_end: i - 1, local_file_start: curStart, local_file_end: i - 1, file_count: i - curStart, raw_bytes: curBytes, first_file: tocFiles[curStart].name, last_file: tocFiles[i - 1].name }); curStart = i; curBytes = 0; } curBytes += flen; } const lastB = blocks.length + 1; blocks.push({ block_num: lastB, block_id: `INDEX_${String(lastB).padStart(2, "0")}`,
+      global_file_start: curStart,
+      global_file_end: tocFiles.length - 1,
+      local_file_start: curStart,
+      local_file_end: tocFiles.length - 1,
+      file_count: tocFiles.length - curStart,
+      raw_bytes: curBytes,
+      first_file: tocFiles[curStart].name,
+      last_file: tocFiles[tocFiles.length - 1].name
+    });
+
+    const tocObj = {
+      schema: "LLMPv2",
+      part: 1,
+      total_parts: 1,
+      embedded_scanner: null,
+      blocks,
+      files: tocFiles
+    };
+    const tocBytes = enc.encode(JSON.stringify(tocObj));
+    const tocHdr = new Uint8Array(4);
+    new DataView(tocHdr.buffer).setUint32(0, tocBytes.length, false);
+
+    const rawStream = concatBytes([tocHdr, tocBytes, ...blobParts]);
+    statusEl.textContent = "Compressing with zlib...";
+    const compPayload = await zlibCompress(rawStream);
+
+    const frameHdr = new Uint8Array(12);
+    frameHdr.set([0x4c, 0x4c, 0x4d, 0x50, 2, 1, 1, 1]); // "LLMP", ver=2, flags=1, part=1/1
+    new DataView(frameHdr.buffer).setUint32(8, compPayload.length, false);
+
+    const frame = concatBytes([frameHdr, compPayload]);
+    const frameSha = sha256Hex(frame);
+    const { imgW, imgH, gridH } = solveDimensions(frame.length);
+
+    // Render header + 1x1 RGB payload onto Canvas
+    outCanvas.width = imgW;
+    outCanvas.height = imgH;
+    const ctx = outCanvas.getContext("2d", { alpha: false });
+
+    ctx.fillStyle = "#ffd400";
+    ctx.fillRect(0, 0, imgW, HEADER_H);
+
+    const swatches = ["#ff0000", "#00ff00", "#0000ff", "#000000", "#ffffff"];
+    swatches.forEach((col, idx) => {
+      const x0 = (imgW - 114) + idx * 21;
+      ctx.fillStyle = col;
+      ctx.fillRect(x0, 8, 17, 17);
+      if (col === "#ffffff") { ctx.strokeStyle = "#000000"; ctx.strokeRect(x0, 8, 17, 17); }
+    });
+
+    ctx.fillStyle = "#000000";
+    ctx.font = "bold 13px monospace";
+    ctx.fillText(`LLMPv2 (1x1 NATIVE) | PART=1/1 | COMPRESS=zlib | SCALE=1x | GRID=${imgW}x${gridH}`, 10, 20);
+    ctx.font = "12px monospace";
+    ctx.fillText(`PART_RAW=${offset} \vert{} FRAME_LEN=${frame.length} | PART_FILES=${tocFiles.length} \vert{} IMG=${imgW}x${imgH}`, 10, 40); ctx.fillText(`SHA256=${frameSha}`, 10, 60);
+    ctx.fillText(`DECODE (fitz+numpy): Pixmap RGB[y>=128], bytes[:FRAME_LEN], skip 12B hdr, inflate via PDF FlateDecode, parse TOC`, 10, 80);
+    ctx.fillText(`CONTENTS: ${tocFiles.map(f => f.name).join(", ")}`.slice(0, Math.floor((imgW - 20) / 7.2)), 10, 100);
+
+    // Write 1x1 RGB pixels below y=128
+    const payloadImg = ctx.createImageData(imgW, gridH);
+    const dst = payloadImg.data;
+    const totalPx = imgW * gridH;
+    for (let p = 0; p < totalPx; p++) {
+      const bIdx = p * 3;
+      const dIdx = p * 4;
+      dst[dIdx]     = bIdx < frame.length ? frame[bIdx] : 0;
+      dst[dIdx + 1] = (bIdx + 1) < frame.length ? frame[bIdx + 1] : 0;
+      dst[dIdx + 2] = (bIdx + 2) < frame.length ? frame[bIdx + 2] : 0;
+      dst[dIdx + 3] = 255;
+    }
+    ctx.putImageData(payloadImg, 0, HEADER_H);
+
+    // Read back from canvas to verify SHA-256 and build PDF bytes
+    const fullRgba = ctx.getImageData(0, 0, imgW, imgH).data;
+    const rgbBytes = new Uint8Array(imgW * imgH * 3);
+    for (let p = 0, s = 0, d = 0; p < imgW * imgH; p++, s += 4, d += 3) {
+      rgbBytes[d] = fullRgba[s];
+      rgbBytes[d + 1] = fullRgba[s + 1];
+      rgbBytes[d + 2] = fullRgba[s + 2];
+    }
+    const readbackFrame = rgbBytes.subarray(imgW * HEADER_H * 3, imgW * HEADER_H * 3 + frame.length);
+    const verified = sha256Hex(readbackFrame) === frameSha;
+    if (!verified) throw new Error("Canvas readback SHA-256 verification failed!");
+
+    const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
+    currentStem = `llmp_${stamp}`; currentPdfBytes = await buildLosslessPdf(rgbBytes, imgW, imgH);  const pdfName = `${currentStem}.pdf`;
+    const pngName = `${currentStem}.png`;
+    const ratioPct = ((100 * compPayload.length) / Math.max(1, offset)).toFixed(1);
+
+    const blockSummaryLines = blocks.map(b =>
+      `  ${b.block_id} | Part 1/1 | entries [${b.global_file_start}..${b.global_file_end}] (${b.file_count} entries) | ${fmtBytes(b.raw_bytes)} | ${b.first_file} -> ${b.last_file}`
+    ).join("\n");
+
+    const manifest = `================================================================================
+LLMPv2 SELF-CONTAINED IMAGE/PDF BUNDLE MANIFEST (1x1 PIXEL SCALE)
+================================================================================
+Bundle ID     : ${currentStem}
+Transport     : STANDALONE PART (${pdfName} / ${pngName})
+Pixel Geometry: 1x1 native RGB | Raster: ${imgW}x${imgH} px
+Archive Stats : ${tocFiles.length} entries | ${blocks.length} logical block(s)
+Payload Size  : ${offset.toLocaleString()} B raw -> ${compPayload.length.toLocaleString()} B packed (${ratioPct}%, zlib)
+Frame SHA256  : ${frameSha}
+
+--- LOGICAL BLOCK INDEX ---
+${blockSummaryLines}
+
+--- LLM SANDBOX DECODER (copy-paste into Python tool with attached ${pdfName}) ---
+\`\`\`python
+import fitz, json
+import numpy as np
+
+PDF_FILES = [${JSON.stringify(pdfName)}]
+
+def inflate_via_fitz(comp_bytes):
+    hdr = b"%PDF-1.4\\n"
+    o1 = b"1 0 obj\\n<< /Type /Catalog /Pages 2 0 R >>\\nendobj\\n"
+    o2 = b"2 0 obj\\n<< /Type /Pages /Kids [] /Count 0 >>\\nendobj\\n"
+    off1, off2, off3 = len(hdr), len(hdr) + len(o1), len(hdr) + len(o1) + len(o2)
+    o3 = f"3 0 obj\\n<< /Length {len(comp_bytes)} /Filter /FlateDecode >>\\nstream\\n".encode("ascii") + comp_bytes + b"\\nendstream\\nendobj\\n"
+    xref_off = off3 + len(o3)
+    mini = (
+        hdr + o1 + o2 + o3
+        + f"xref\\n0 4\\n0000000000 65535 f \\n{off1:010d} 00000 n \\n{off2:010d} 00000 n \\n{off3:010d} 00000 n \\n".encode("ascii")
+        + f"trailer\\n<< /Size 4 /Root 1 0 R >>\\nstartxref\\n{xref_off}\\n%%EOF".encode("ascii")
+    )
+    d = fitz.open(stream=mini, filetype="pdf")
+    out = d.xref_stream(3)
+    d.close()
+    return out
+
+files_by_idx = {}
+blocks_by_num = {}
+
+for p in PDF_FILES:
+    doc = fitz.open(p)
+    pix = fitz.Pixmap(doc, doc.get_page_images(0)[0][0])
+    arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape((pix.height, pix.width, pix.n))[:, :, :3]
+    doc.close()
+    raw = arr[128:, :, :].tobytes()
+    if raw[:4] == b"LLMP":
+        clen = int(np.frombuffer(raw[8:12], dtype=">u4")[0])
+        stream = inflate_via_fitz(raw[12 : 12 + clen])
+        toc_len = int(np.frombuffer(stream[:4], dtype=">u4")[0])
+        toc = json.loads(stream[4 : 4 + toc_len].decode("utf-8"))
+        blob = stream[4 + toc_len :]
+        for f in toc["files"]:
+            files_by_idx[f["global_idx"]] = (f, blob)
+        for b in toc.get("blocks", []):
+            blocks_by_num[b["block_num"]] = (b, toc["files"], blob)
+
+def read_file(gidx, page=1, page_chars=18000):
+    f, blob = files_by_idx[gidx]
+    txt = blob[f["offset"] : f["offset"] + f["len"]].decode("utf-8", "replace")
+    start = (page - 1) * page_chars
+    return txt[start : start + page_chars]
+
+def search_files(query, max_hits=25):
+    q = query.lower()
+    hits = []
+    for gidx in sorted(files_by_idx):
+        f, blob = files_by_idx[gidx]
+        txt = blob[f["offset"] : f["offset"] + f["len"]].decode("utf-8", "replace")
+        pos = txt.lower().find(q)
+        while pos != -1 and len(hits) < max_hits:
+            s = max(0, pos - 60)
+            hits.append(f"[{gidx}] {f['name']}: ...{txt[s:pos+len(q)+100].replace(chr(10), ' ')}...")
+            pos = txt.lower().find(q, pos + len(q))
+    return "\\n".join(hits) if hits else "No matches."
+
+print(f"Unpacked {len(files_by_idx)} file(s) across {len(blocks_by_num)} block(s).")
+\`\`\`
+`;
+
+    manifestOut.value = manifest;
+    outSection.style.display = "block";
+    canvasSection.style.display = "block";
+    statusEl.textContent = `Verified OK! ${tocFiles.length} file(s) (${fmtBytes(offset)}) ->${imgW}x${imgH} px (${fmtBytes(frame.length)} packed).`;
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`; } });  document.getElementById("btnCopyManifest").addEventListener("click", async () => { await navigator.clipboard.writeText(manifestOut.value); statusEl.textContent = "Manifest copied to clipboard."; });  document.getElementById("btnDownloadManifest").addEventListener("click", () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([manifestOut.value], { type: "text/plain" })); a.download = `${currentStem}_manifest.txt`;
+  a.click();
+});
+
+document.getElementById("btnDownloadPng").addEventListener("click", () => {
+  outCanvas.toBlob(blob => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${currentStem}.png`; a.click(); }, "image/png"); });  document.getElementById("btnDownloadPdf").addEventListener("click", () => { if (!currentPdfBytes) return; const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([currentPdfBytes], { type: "application/pdf" })); a.download = `${currentStem}.pdf`;
+  a.click();
+});
+
+document.getElementById("btnClear").addEventListener("click", () => {
+  fileInput.value = "";
+  pasteText.value = "";
+  manifestOut.value = "";
+  currentPdfBytes = null;
+  outSection.style.display = "none";
+  canvasSection.style.display = "none";
+  statusEl.textContent = "Cleared.";
+});
+</script>
+</body>
+</html>
