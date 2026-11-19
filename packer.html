@@ -15,6 +15,7 @@
   input[type="text"], input[type="number"] { font-family: monospace; padding: 4px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
   button { font-family: monospace; padding: 6px 12px; cursor: pointer; font-weight: bold; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
   canvas { max-width: 100%; height: auto; border: 1px solid #333; image-rendering: pixelated; display: block; margin-top: 8px; }
   #status { font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
 </style>
@@ -69,6 +70,7 @@ const fileInput = document.getElementById("fileInput");
 const pasteName = document.getElementById("pasteName");
 const pasteText = document.getElementById("pasteText");
 const blockKbInput = document.getElementById("blockKb");
+const btnPack = document.getElementById("btnPack");
 const statusEl = document.getElementById("status");
 const outSection = document.getElementById("outSection");
 const canvasSection = document.getElementById("canvasSection");
@@ -132,12 +134,33 @@ function sha256Hex(bytes) {
   return Array.from(H).map(x => x.toString(16).padStart(8, "0")).join("");
 }
 
+function concatBytes(arrays) {
+  const total = arrays.reduce((s, a) => s + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrays) { out.set(a, off); off += a.length; }
+  return out;
+}
+
 async function zlibCompress(uint8Arr) {
   const cs = new CompressionStream("deflate");
-  const w = cs.writable.getWriter();
-  w.write(uint8Arr);
-  w.close();
-  return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  const writer = cs.writable.getWriter();
+  const reader = cs.readable.getReader();
+
+  // Drain reader concurrently with writer so mobile WebViews never deadlock on backpressure
+  const readAll = (async () => {
+    const chunks = [];
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    return concatBytes(chunks);
+  })();
+
+  await writer.write(uint8Arr);
+  await writer.close();
+  return await readAll;
 }
 
 function solveDimensions(frameLen) {
@@ -157,20 +180,65 @@ function solveDimensions(frameLen) {
 }
 
 async function buildLosslessPdf(rgbBytes, w, h) {
-  const compRgb = await zlibCompress(rgbBytes);
+  let streamData = await zlibCompress(rgbBytes);
+  // Confirm RFC 1950 zlib header (0x78); fall back to uncompressed DeviceRGB if stream differs
+  const isZlib = streamData.length > 2 && streamData[0] === 0x78;
+  if (!isZlib) streamData = rgbBytes;
+
+  const filterTag = isZlib ? "/Filter /FlateDecode " : "";
   const enc = new TextEncoder();
   const phdr = new Uint8Array([0x25,0x50,0x44,0x46,0x2d,0x31,0x2e,0x34,0x0a,0x25,0xe2,0xe3,0xcf,0xd3,0x0a]);
   const o1 = enc.encode("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
   const o2 = enc.encode("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
-  const o3 = enc.encode(`3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n`); const o4h = enc.encode(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length${compRgb.length} >>\nstream\n`);
+  const o3 = enc.encode(
+    `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /CropBox [0 0 ${w} ${h}] ` +
+    `/Resources << /ProcSet [/PDF /ImageC] /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n`
+  );
+  const o4h = enc.encode(
+    `4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} ` +
+    `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Interpolate false ${filterTag}` +
+    `/Length ${streamData.length} >>\nstream\n`
+  );
   const o4f = enc.encode("\nendstream\nendobj\n");
-  const cs = enc.encode(`q ${w} 0 0${h} 0 0 cm /Im0 Do Q\n`);
-  const o5 = concatBytes([enc.encode(`5 0 obj\n<< /Length ${cs.length} >>\nstream\n`), cs, enc.encode("endstream\nendobj\n")]);  const offs = []; let pos = phdr.length; for (const sz of [o1.length, o2.length, o3.length, o4h.length + compRgb.length + o4f.length, o5.length]) { offs.push(pos); pos += sz; } let xref = `xref\n0 6\n0000000000 65535 f \n`; for (const o of offs) xref += `${String(o).padStart(10, "0")} 00000 n \n`;
-  xref += `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${pos}\n\%\%EOF\n`;  return concatBytes([phdr, o1, o2, o3, o4h, compRgb, o4f, o5, enc.encode(xref)]); }  function concatBytes(arrays) { const total = arrays.reduce((s, a) => s + a.length, 0); const out = new Uint8Array(total); let off = 0; for (const a of arrays) { out.set(a, off); off += a.length; } return out; }  function fmtBytes(n) { if (n < 1024) return `${n}B`;
-  if (n < 1048576) return `${(n / 1024).toFixed(1)}KB`; return `${(n / 1048576).toFixed(2)}MB`;
+  const cs = enc.encode(`q\n${w} 0 0 ${h} 0 0 cm\n/Im0 Do\nQ\n`);
+  const o5 = concatBytes([
+    enc.encode(`5 0 obj\n<< /Length ${cs.length} >>\nstream\n`),
+    cs,
+    enc.encode("endstream\nendobj\n")
+  ]);
+
+  const offs = [];
+  let pos = phdr.length;
+  for (const sz of [o1.length, o2.length, o3.length, o4h.length + streamData.length + o4f.length, o5.length]) {
+    offs.push(pos);
+    pos += sz;
+  }
+  let xref = `xref\n0 6\n0000000000 65535 f \n`;
+  for (const o of offs) xref += `${String(o).padStart(10, "0")} 00000 n \n`;
+  xref += `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${pos}\n%%EOF\n`;
+
+  return concatBytes([phdr, o1, o2, o3, o4h, streamData, o4f, o5, enc.encode(xref)]);
 }
 
-document.getElementById("btnPack").addEventListener("click", async () => {
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n}B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / 1048576).toFixed(2)}MB`;
+}
+
+btnPack.addEventListener("click", async () => {
+  btnPack.disabled = true;
   try {
     statusEl.textContent = "Reading inputs...";
     const enc = new TextEncoder();
@@ -219,7 +287,25 @@ document.getElementById("btnPack").addEventListener("click", async () => {
         const bnum = blocks.length + 1;
         blocks.push({
           block_num: bnum,
-          block_id: `INDEX_${String(bnum).padStart(2, "0")}`, global_file_start: curStart, global_file_end: i - 1, local_file_start: curStart, local_file_end: i - 1, file_count: i - curStart, raw_bytes: curBytes, first_file: tocFiles[curStart].name, last_file: tocFiles[i - 1].name }); curStart = i; curBytes = 0; } curBytes += flen; } const lastB = blocks.length + 1; blocks.push({ block_num: lastB, block_id: `INDEX_${String(lastB).padStart(2, "0")}`,
+          block_id: `INDEX_${String(bnum).padStart(2, "0")}`,
+          global_file_start: curStart,
+          global_file_end: i - 1,
+          local_file_start: curStart,
+          local_file_end: i - 1,
+          file_count: i - curStart,
+          raw_bytes: curBytes,
+          first_file: tocFiles[curStart].name,
+          last_file: tocFiles[i - 1].name
+        });
+        curStart = i;
+        curBytes = 0;
+      }
+      curBytes += flen;
+    }
+    const lastB = blocks.length + 1;
+    blocks.push({
+      block_num: lastB,
+      block_id: `INDEX_${String(lastB).padStart(2, "0")}`,
       global_file_start: curStart,
       global_file_end: tocFiles.length - 1,
       local_file_start: curStart,
@@ -243,7 +329,7 @@ document.getElementById("btnPack").addEventListener("click", async () => {
     new DataView(tocHdr.buffer).setUint32(0, tocBytes.length, false);
 
     const rawStream = concatBytes([tocHdr, tocBytes, ...blobParts]);
-    statusEl.textContent = "Compressing with zlib...";
+    statusEl.textContent = "Compressing payload with zlib...";
     const compPayload = await zlibCompress(rawStream);
 
     const frameHdr = new Uint8Array(12);
@@ -254,7 +340,7 @@ document.getElementById("btnPack").addEventListener("click", async () => {
     const frameSha = sha256Hex(frame);
     const { imgW, imgH, gridH } = solveDimensions(frame.length);
 
-    // Render header + 1x1 RGB payload onto Canvas
+    statusEl.textContent = "Rendering RGB pixels to canvas...";
     outCanvas.width = imgW;
     outCanvas.height = imgH;
     const ctx = outCanvas.getContext("2d", { alpha: false });
@@ -274,7 +360,8 @@ document.getElementById("btnPack").addEventListener("click", async () => {
     ctx.font = "bold 13px monospace";
     ctx.fillText(`LLMPv2 (1x1 NATIVE) | PART=1/1 | COMPRESS=zlib | SCALE=1x | GRID=${imgW}x${gridH}`, 10, 20);
     ctx.font = "12px monospace";
-    ctx.fillText(`PART_RAW=${offset} \vert{} FRAME_LEN=${frame.length} | PART_FILES=${tocFiles.length} \vert{} IMG=${imgW}x${imgH}`, 10, 40); ctx.fillText(`SHA256=${frameSha}`, 10, 60);
+    ctx.fillText(`PART_RAW=${offset} | FRAME_LEN=${frame.length} | PART_FILES=${tocFiles.length} | IMG=${imgW}x${imgH}`, 10, 40);
+    ctx.fillText(`SHA256=${frameSha}`, 10, 60);
     ctx.fillText(`DECODE (fitz+numpy): Pixmap RGB[y>=128], bytes[:FRAME_LEN], skip 12B hdr, inflate via PDF FlateDecode, parse TOC`, 10, 80);
     ctx.fillText(`CONTENTS: ${tocFiles.map(f => f.name).join(", ")}`.slice(0, Math.floor((imgW - 20) / 7.2)), 10, 100);
 
@@ -293,6 +380,7 @@ document.getElementById("btnPack").addEventListener("click", async () => {
     ctx.putImageData(payloadImg, 0, HEADER_H);
 
     // Read back from canvas to verify SHA-256 and build PDF bytes
+    statusEl.textContent = "Verifying canvas readback & building PDF...";
     const fullRgba = ctx.getImageData(0, 0, imgW, imgH).data;
     const rgbBytes = new Uint8Array(imgW * imgH * 3);
     for (let p = 0, s = 0, d = 0; p < imgW * imgH; p++, s += 4, d += 3) {
@@ -305,7 +393,10 @@ document.getElementById("btnPack").addEventListener("click", async () => {
     if (!verified) throw new Error("Canvas readback SHA-256 verification failed!");
 
     const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
-    currentStem = `llmp_${stamp}`; currentPdfBytes = await buildLosslessPdf(rgbBytes, imgW, imgH);  const pdfName = `${currentStem}.pdf`;
+    currentStem = `llmp_${stamp}`;
+    currentPdfBytes = await buildLosslessPdf(rgbBytes, imgW, imgH);
+
+    const pdfName = `${currentStem}.pdf`;
     const pngName = `${currentStem}.png`;
     const ratioPct = ((100 * compPayload.length) / Math.max(1, offset)).toFixed(1);
 
@@ -396,18 +487,32 @@ print(f"Unpacked {len(files_by_idx)} file(s) across {len(blocks_by_num)} block(s
     manifestOut.value = manifest;
     outSection.style.display = "block";
     canvasSection.style.display = "block";
-    statusEl.textContent = `Verified OK! ${tocFiles.length} file(s) (${fmtBytes(offset)}) ->${imgW}x${imgH} px (${fmtBytes(frame.length)} packed).`;
+    statusEl.textContent = `Verified OK! ${tocFiles.length} file(s) (${fmtBytes(offset)}) -> ${imgW}x${imgH} px (${fmtBytes(frame.length)} frame, ${fmtBytes(currentPdfBytes.length)} PDF).`;
   } catch (err) {
-    statusEl.textContent = `Error: ${err.message}`; } });  document.getElementById("btnCopyManifest").addEventListener("click", async () => { await navigator.clipboard.writeText(manifestOut.value); statusEl.textContent = "Manifest copied to clipboard."; });  document.getElementById("btnDownloadManifest").addEventListener("click", () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([manifestOut.value], { type: "text/plain" })); a.download = `${currentStem}_manifest.txt`;
-  a.click();
+    statusEl.textContent = `Error: ${err.message}`;
+  } finally {
+    btnPack.disabled = false;
+  }
+});
+
+document.getElementById("btnCopyManifest").addEventListener("click", async () => {
+  await navigator.clipboard.writeText(manifestOut.value);
+  statusEl.textContent = "Manifest copied to clipboard.";
+});
+
+document.getElementById("btnDownloadManifest").addEventListener("click", () => {
+  triggerBlobDownload(new Blob([manifestOut.value], { type: "text/plain" }), `${currentStem}_manifest.txt`);
 });
 
 document.getElementById("btnDownloadPng").addEventListener("click", () => {
   outCanvas.toBlob(blob => {
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${currentStem}.png`; a.click(); }, "image/png"); });  document.getElementById("btnDownloadPdf").addEventListener("click", () => { if (!currentPdfBytes) return; const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([currentPdfBytes], { type: "application/pdf" })); a.download = `${currentStem}.pdf`;
-  a.click();
+    if (blob) triggerBlobDownload(blob, `${currentStem}.png`);
+  }, "image/png");
+});
+
+document.getElementById("btnDownloadPdf").addEventListener("click", () => {
+  if (!currentPdfBytes) return;
+  triggerBlobDownload(new Blob([currentPdfBytes], { type: "application/pdf" }), `${currentStem}.pdf`);
 });
 
 document.getElementById("btnClear").addEventListener("click", () => {
