@@ -3,88 +3,196 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DLN1 1-Bit Archive Reconstructor</title>
+<title>DLN1 1-Bit Bidirectional Transceiver</title>
 <style>
-  :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#ffd400;--ok:#3fb950;--warn:#f85149}
+  :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#ffd400;--ok:#3fb950;--warn:#f85149;--info:#58a6ff}
   *{box-sizing:border-box}
   body{margin:0;padding:12px;background:var(--bg);color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.4}
   .hdr{background:var(--accent);color:#000;padding:10px 12px;border-radius:6px;font-weight:700;margin-bottom:10px}
   .hdr small{display:block;font-weight:400;font-size:11px;margin-top:2px}
+  .tabs{display:flex;gap:8px;margin-bottom:10px}
+  .tabs button{flex:1;padding:10px;font-size:13px}
+  .tabs button.active{background:var(--accent);color:#000;border-color:var(--accent)}
   .card{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px}
   .drop-btn{display:block;width:100%;padding:14px;background:#1f2937;border:2px dashed var(--accent);border-radius:6px;color:var(--accent);text-align:center;font-weight:700;font-size:13px;cursor:pointer}
   input[type=file]{display:none}
-  .row-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .row-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center}
   button{background:#21262d;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:8px 12px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer}
   button.primary{background:var(--ok);color:#000;border-color:var(--ok)}
+  button.info{background:var(--info);color:#000;border-color:var(--info)}
   button:disabled{opacity:.4;cursor:not-allowed}
+  textarea,select,input[type=text]{width:100%;padding:8px;background:#0d1117;border:1px solid var(--border);border-radius:5px;color:var(--text);font-family:inherit;font-size:12px;margin-top:4px}
+  label.lbl{display:block;margin-top:8px;font-weight:700;color:var(--muted)}
   .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px}
   .stat-box{background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:6px 8px;text-align:center}
   .stat-box b{display:block;font-size:14px;color:var(--accent)}
   .log{max-height:160px;overflow-y:auto;font-size:11px;white-space:pre-wrap;color:var(--muted)}
   .log .ok{color:var(--ok)} .log .err{color:var(--warn)}
-  pre{margin:0;max-height:50vh;overflow:auto;background:#0d1117;border:1px solid var(--border);border-radius:5px;padding:8px;font-size:11px;white-space:pre-wrap;word-break:break-word;color:var(--text)}
+  pre{margin:0;max-height:48vh;overflow:auto;background:#0d1117;border:1px solid var(--border);border-radius:5px;padding:8px;font-size:11px;white-space:pre-wrap;word-break:break-word;color:var(--text)}
+  .grid-frames{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:10px}
+  .frame-item{background:#0d1117;border:1px solid var(--border);border-radius:5px;padding:6px;text-align:center}
+  .frame-item img{width:100%;height:auto;border:1px solid #333;image-rendering:pixelated;display:block;margin-bottom:6px}
+  .frame-item small{display:block;color:var(--muted);font-size:10px;margin-bottom:6px}
+  .frame-item button{width:100%;padding:6px;font-size:11px}
 </style>
 </head>
 <body>
-<div class="hdr">DLN1 1-BIT ARCHIVE RECONSTRUCTOR<small>Select DLN1 JPEGs/PNGs in order (01 → N) to rebuild and download output</small></div>
 
-<div class="card">
-  <label class="drop-btn" for="fileInput">+ SELECT DLN1 IMAGES IN ORDER</label>
-  <input id="fileInput" type="file" accept="image/*" multiple>
-  <div class="row-btns">
-    <button id="btnDownload" class="primary" disabled>Download Output</button>
-    <button id="btnCopy" disabled>Copy Output</button>
-    <button id="btnClear">Clear</button>
+<div class="hdr">DLN1 1-BIT BIDIRECTIONAL TRANSCEIVER<small>Decode WhatsApp-survivable 1-bit JPEGs or encode text/files into DLN1 JPEGs &amp; multi-page PDF</small></div>
+
+<div class="tabs">
+  <button id="tabDecode" class="active" type="button">1. Decode DLN1 Images</button>
+  <button id="tabEncode" type="button">2. Encode to DLN1 JPEGs / PDF</button>
+</div>
+
+<!-- ==================== DECODE VIEW ==================== -->
+<div id="decodeView">
+  <div class="card">
+    <label class="drop-btn" for="fileInput">+ SELECT DLN1 IMAGES IN ORDER (01 → N)</label>
+    <input id="fileInput" type="file" accept="image/*" multiple>
+    <div class="row-btns">
+      <button id="btnDownload" class="primary" disabled>Download Output</button>
+      <button id="btnCopy" disabled>Copy Output</button>
+      <button id="btnClear">Clear</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stats">
+      <div class="stat-box"><b id="stParts">0</b>Parts Decoded</div>
+      <div class="stat-box"><b id="stBytes">0</b>Total Bytes</div>
+      <div class="stat-box"><b id="stType">-</b>Detected Type</div>
+    </div>
+    <div id="log" class="log">Ready. Select 1 or more DLN1 images in order.</div>
+  </div>
+
+  <div class="card" id="previewCard" style="display:none">
+    <div style="margin-bottom:6px;color:var(--muted)">Output Preview (first 8,000 chars):</div>
+    <pre id="previewBox"></pre>
   </div>
 </div>
 
-<div class="card">
-  <div class="stats">
-    <div class="stat-box"><b id="stParts">0</b>Parts Decoded</div>
-    <div class="stat-box"><b id="stBytes">0</b>Total Bytes</div>
-    <div class="stat-box"><b id="stType">-</b>Detected Type</div>
-  </div>
-  <div id="log" class="log">Ready. Select 1 or more DLN1 images in order.</div>
-</div>
+<!-- ==================== ENCODE VIEW ==================== -->
+<div id="encodeView" style="display:none">
+  <div class="card">
+    <label class="drop-btn" for="encFileInput">+ SELECT TEXT / JSON / CSV FILES (OPTIONAL)</label>
+    <input id="encFileInput" type="file" multiple>
+    <div id="encFileList" style="margin-top:6px;color:var(--muted);font-size:11px">No files selected.</div>
 
-<div class="card" id="previewCard" style="display:none">
-  <div style="margin-bottom:6px;color:var(--muted)">Output Preview (first 8,000 chars):</div>
-  <pre id="previewBox"></pre>
+    <label class="lbl" for="encPasteText">Or Paste Text / JSON / CSV Directly:</label>
+    <textarea id="encPasteText" rows="6" placeholder="Paste text or JSON here to encode into WhatsApp-survivable 1-bit DLN1 frames..."></textarea>
+
+    <label class="lbl" for="encFrameSize">Frame Resolution (8x8 1-Bit Tiles):</label>
+    <select id="encFrameSize">
+      <option value="1024">1024x1024 (~2.0 KB compressed / frame — fast mobile preview)</option>
+      <option value="2048" selected>2048x2048 (~8.1 KB compressed / frame — balanced)</option>
+      <option value="4096">4096x4096 (~32.7 KB compressed / frame — max density)</option>
+    </select>
+
+    <div class="row-btns">
+      <button id="btnEncode" class="primary" type="button">Encode &amp; Verify DLN1</button>
+      <button id="btnEncClear" type="button">Clear</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stats">
+      <div class="stat-box"><b id="encParts">0</b>Frames Built</div>
+      <div class="stat-box"><b id="encRawBytes">0</b>Input Bytes</div>
+      <div class="stat-box"><b id="encJpgBytes">0</b>Total JPEG Bytes</div>
+    </div>
+    <div id="encLog" class="log">Ready. Add files or paste text, then click Encode &amp; Verify DLN1.</div>
+  </div>
+
+  <div class="card" id="encOutCard" style="display:none">
+    <div class="row-btns" style="margin-top:0">
+      <button id="btnDlPdf" class="info" type="button">Download Multi-Page PDF (All JPEGs)</button>
+      <button id="btnDlAllJpg" class="primary" type="button">Download All Individual JPEGs</button>
+    </div>
+    <div id="framesGrid" class="grid-frames"></div>
+  </div>
 </div>
 
 <script>
-const fileInput = document.getElementById("fileInput"),
-      logEl = document.getElementById("log"),
-      btnDownload = document.getElementById("btnDownload"),
-      btnCopy = document.getElementById("btnCopy"),
-      btnClear = document.getElementById("btnClear"),
-      previewCard = document.getElementById("previewCard"),
-      previewBox = document.getElementById("previewBox");
-
 const sharedCanvas = document.createElement("canvas");
 const sharedCtx = sharedCanvas.getContext("2d", { willReadFrequently: true, alpha: false });
+const tick = () => new Promise(r => setTimeout(r, 0));
 
-let joinedText = "", detectedExt = "txt", detectedMime = "text/plain";
-
-function appendLog(msg, cls = "") {
+function appendLog(el, msg, cls = "") {
   const d = document.createElement("div");
   if (cls) d.className = cls;
   d.textContent = msg;
-  logEl.appendChild(d);
-  logEl.scrollTop = logEl.scrollHeight;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
 }
 
-const tick = () => new Promise(r => setTimeout(r, 0));
+function concatBytes(arrays) {
+  const total = arrays.reduce((s, a) => s + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrays) { out.set(a, off); off += a.length; }
+  return out;
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+// Concurrent stream drain prevents mobile WebView backpressure hangs
+async function runStream(stream, inputBytes) {
+  const writer = stream.writable.getWriter();
+  const reader = stream.readable.getReader();
+  const readAll = (async () => {
+    const chunks = [];
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    return concatBytes(chunks);
+  })();
+  await writer.write(inputBytes);
+  await writer.close();
+  return await readAll;
+}
 
 async function inflateStream(b) {
   const fmt = (b[0] === 0x78) ? "deflate" : "deflate-raw";
-  const ds = new DecompressionStream(fmt);
-  const w = ds.writable.getWriter();
-  w.write(b);
-  w.close();
-  return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+  return await runStream(new DecompressionStream(fmt), b);
 }
 
+async function deflateRawStream(b) {
+  return await runStream(new CompressionStream("deflate-raw"), b);
+}
+
+// ==================== TAB SWITCHING ====================
+const tabDecode = document.getElementById("tabDecode");
+const tabEncode = document.getElementById("tabEncode");
+const decodeView = document.getElementById("decodeView");
+const encodeView = document.getElementById("encodeView");
+
+tabDecode.addEventListener("click", () => {
+  tabDecode.classList.add("active");
+  tabEncode.classList.remove("active");
+  decodeView.style.display = "block";
+  encodeView.style.display = "none";
+});
+
+tabEncode.addEventListener("click", () => {
+  tabEncode.classList.add("active");
+  tabDecode.classList.remove("active");
+  encodeView.style.display = "block";
+  decodeView.style.display = "none";
+});
+
+// ==================== CORE DLN1 DECODER ====================
 function sampleTileGridFast(img, W, H, TILE) {
   const rCnt = Math.floor(H / TILE), cCnt = Math.floor(W / TILE);
   sharedCanvas.width = cCnt;
@@ -107,8 +215,8 @@ function sampleTileGridFast(img, W, H, TILE) {
   return { rgba, rCnt, cCnt, stride: TILE, rowStride: W * TILE, offset: 4 * W + 4 };
 }
 
-async function decodeSingleImage(file) {
-  const url = URL.createObjectURL(file);
+async function decodeSingleBlob(blobOrFile, labelName) {
+  const url = URL.createObjectURL(blobOrFile);
   try {
     const img = await new Promise((res, rej) => {
       const im = new Image();
@@ -164,7 +272,7 @@ async function decodeSingleImage(file) {
     const comp = bytes.subarray(8, 8 + clen);
     const inflated = await inflateStream(comp);
     return {
-      name: file.name,
+      name: labelName,
       dims: `${W}x${H}`,
       rawBytes: inflated.length,
       text: new TextDecoder("utf-8").decode(inflated)
@@ -174,6 +282,17 @@ async function decodeSingleImage(file) {
   }
 }
 
+// ==================== DECODE UI EVENTS ====================
+const fileInput = document.getElementById("fileInput"),
+      logEl = document.getElementById("log"),
+      btnDownload = document.getElementById("btnDownload"),
+      btnCopy = document.getElementById("btnCopy"),
+      btnClear = document.getElementById("btnClear"),
+      previewCard = document.getElementById("previewCard"),
+      previewBox = document.getElementById("previewBox");
+
+let joinedText = "", detectedExt = "txt", detectedMime = "text/plain";
+
 fileInput.addEventListener("change", async e => {
   const files = Array.from(e.target.files || []);
   e.target.value = "";
@@ -181,19 +300,19 @@ fileInput.addEventListener("change", async e => {
 
   const t0 = performance.now();
   logEl.innerHTML = "";
-  appendLog(`Decoding ${files.length} image(s) in selection order...`);
+  appendLog(logEl, `Decoding ${files.length} image(s) in selection order...`);
   await tick();
 
   const decoded = [];
   let totalBytes = 0;
   for (const f of files) {
     try {
-      const r = await decodeSingleImage(f);
+      const r = await decodeSingleBlob(f, f.name);
       decoded.push(r);
       totalBytes += r.rawBytes;
-      appendLog(`[OK] ${f.name} (${r.dims}) -> ${r.rawBytes.toLocaleString()} bytes`, "ok");
+      appendLog(logEl, `[OK] ${f.name} (${r.dims}) -> ${r.rawBytes.toLocaleString()} bytes`, "ok");
     } catch (err) {
-      appendLog(`[ERR] ${f.name}: ${err.message}`, "err");
+      appendLog(logEl, `[ERR] ${f.name}: ${err.message}`, "err");
     }
     await tick();
   }
@@ -222,17 +341,12 @@ fileInput.addEventListener("change", async e => {
   previewCard.style.display = "block";
 
   const ms = Math.round(performance.now() - t0);
-  appendLog(`DONE in ${ms}ms: ${decoded.length} part(s) joined (${totalBytes.toLocaleString()} bytes, .${detectedExt}).`, "ok");
+  appendLog(logEl, `DONE in ${ms}ms: ${decoded.length} part(s) joined (${totalBytes.toLocaleString()} bytes, .${detectedExt}).`, "ok");
 });
 
 btnDownload.addEventListener("click", () => {
   if (!joinedText) return;
-  const blob = new Blob([joinedText], { type: detectedMime });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `dln1_output.${detectedExt}`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  triggerDownload(new Blob([joinedText], { type: detectedMime }), `dln1_output.${detectedExt}`);
 });
 
 btnCopy.addEventListener("click", async () => {
@@ -255,6 +369,247 @@ btnClear.addEventListener("click", () => {
   document.getElementById("stBytes").textContent = "0";
   document.getElementById("stType").textContent = "-";
   logEl.textContent = "Cleared.";
+});
+
+// ==================== CORE DLN1 ENCODER & MULTI-PAGE JPEG PDF ====================
+const encFileInput = document.getElementById("encFileInput"),
+      encFileList = document.getElementById("encFileList"),
+      encPasteText = document.getElementById("encPasteText"),
+      encFrameSize = document.getElementById("encFrameSize"),
+      btnEncode = document.getElementById("btnEncode"),
+      btnEncClear = document.getElementById("btnEncClear"),
+      encLog = document.getElementById("encLog"),
+      encOutCard = document.getElementById("encOutCard"),
+      framesGrid = document.getElementById("framesGrid");
+
+let encodedFrames = []; // [{ name, w, h, blob, jpegBytes, url }]
+let generatedPdfBlob = null;
+
+encFileInput.addEventListener("change", () => {
+  const files = Array.from(encFileInput.files || []);
+  encFileList.textContent = files.length
+    ? `Selected ${files.length} file(s): ${files.map(f => f.name).join(", ")}`
+    : "No files selected.";
+});
+
+async function renderDln1JpegFrame(payloadBytes, pxSize, partName) {
+  const TILE = 8;
+  const rCnt = pxSize / TILE;
+  const cCnt = pxSize / TILE;
+
+  // 1. Paint 1-pixel-per-tile grid onto tiny cCnt x rCnt canvas
+  const tiny = document.createElement("canvas");
+  tiny.width = cCnt;
+  tiny.height = rCnt;
+  const tCtx = tiny.getContext("2d", { alpha: false });
+  const imgData = tCtx.createImageData(cCnt, rCnt);
+  const d = imgData.data;
+
+  // Row 0 alternating sync pattern: 0, 255, 0, 255...
+  for (let c = 0; c < cCnt; c++) {
+    const val = (c & 1) ? 255 : 0;
+    const p = c * 4;
+    d[p] = val; d[p + 1] = val; d[p + 2] = val; d[p + 3] = 255;
+  }
+
+  // Row 1..rCnt-1 data bits (MSB first)
+  const totalDataTiles = (rCnt - 1) * cCnt;
+  for (let t = 0; t < totalDataTiles; t++) {
+    const byteIdx = t >> 3;
+    const bitIdx = 7 - (t & 7);
+    const bit = byteIdx < payloadBytes.length ? ((payloadBytes[byteIdx] >> bitIdx) & 1) : 0;
+    const val = bit ? 255 : 0;
+    const p = (cCnt + t) * 4;
+    d[p] = val; d[p + 1] = val; d[p + 2] = val; d[p + 3] = 255;
+  }
+  tCtx.putImageData(imgData, 0, 0);
+
+  // 2. Nearest-neighbor upscale to full pxSize x pxSize (8x8 macro-tiles)
+  sharedCanvas.width = pxSize;
+  sharedCanvas.height = pxSize;
+  sharedCtx.imageSmoothingEnabled = false;
+  sharedCtx.drawImage(tiny, 0, 0, pxSize, pxSize);
+
+  const jpegBlob = await new Promise(res => sharedCanvas.toBlob(res, "image/jpeg", 0.98));
+  const jpegBytes = new Uint8Array(await jpegBlob.arrayBuffer());
+  return { name: partName, w: pxSize, h: pxSize, blob: jpegBlob, jpegBytes, url: URL.createObjectURL(jpegBlob) };
+}
+
+function buildMultiPageJpegPdf(frames) {
+  const enc = new TextEncoder();
+  const phdr = new Uint8Array([0x25,0x50,0x44,0x46,0x2d,0x31,0x2e,0x34,0x0a,0x25,0xe2,0xe3,0xcf,0xd3,0x0a]);
+  const n = frames.length;
+  const kids = frames.map((_, i) => `${3 + 3 * i} 0 R`).join(" ");
+  const o1 = enc.encode("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+  const o2 = enc.encode(`2 0 obj\n<< /Type /Pages /Kids [${kids}] /Count ${n} >>\nendobj\n`);
+
+  const objs = [o1, o2];
+  for (let i = 0; i < n; i++) {
+    const { w, h, jpegBytes } = frames[i];
+    const b = 3 + 3 * i;
+    const pObj = enc.encode(
+      `${b} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /CropBox [0 0 ${w} ${h}] ` +
+      `/Resources << /ProcSet [/PDF /ImageC] /XObject << /Im0 ${b + 1} 0 R >> >> /Contents ${b + 2} 0 R >>\nendobj\n`
+    );
+    const imHdr = enc.encode(
+      `${b + 1} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} ` +
+      `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`
+    );
+    const imFtr = enc.encode("\nendstream\nendobj\n");
+    const cs = enc.encode(`q\n${w} 0 0 ${h} 0 0 cm\n/Im0 Do\nQ\n`);
+    const cObj = concatBytes([
+      enc.encode(`${b + 2} 0 obj\n<< /Length ${cs.length} >>\nstream\n`),
+      cs,
+      enc.encode("endstream\nendobj\n")
+    ]);
+    objs.push(pObj, concatBytes([imHdr, jpegBytes, imFtr]), cObj);
+  }
+
+  const offs = [];
+  let pos = phdr.length;
+  for (const o of objs) { offs.push(pos); pos += o.length; }
+
+  const totalObjs = objs.length + 1;
+  let xref = `xref\n0 ${totalObjs}\n0000000000 65535 f \n`;
+  for (const off of offs) xref += `${String(off).padStart(10, "0")} 00000 n \n`;
+  xref += `trailer\n<< /Size ${totalObjs} /Root 1 0 R >>\nstartxref\n${pos}\n%%EOF\n`;
+
+  return concatBytes([phdr, ...objs, enc.encode(xref)]);
+}
+
+function cleanupEncodedFrames() {
+  for (const fr of encodedFrames) URL.revokeObjectURL(fr.url);
+  encodedFrames = [];
+  generatedPdfBlob = null;
+  framesGrid.innerHTML = "";
+  encOutCard.style.display = "none";
+}
+
+btnEncode.addEventListener("click", async () => {
+  btnEncode.disabled = true;
+  cleanupEncodedFrames();
+  encLog.innerHTML = "";
+
+  try {
+    const parts = [];
+    for (const f of Array.from(encFileInput.files || [])) {
+      const txt = await f.text();
+      if (txt.length > 0) parts.push(txt);
+    }
+    if (encPasteText.value.length > 0) {
+      parts.push(encPasteText.value);
+    }
+
+    const fullText = parts.join("\n");
+    if (!fullText) {
+      appendLog(encLog, "Add at least one file or paste some text first.", "err");
+      return;
+    }
+
+    const pxSize = parseInt(encFrameSize.value, 10);
+    const tilesPerSide = pxSize / 8;
+    const maxPayloadBytes = (((tilesPerSide - 1) * tilesPerSide) >> 3) - 8;
+    const rawTotalBytes = new TextEncoder().encode(fullText).length;
+
+    appendLog(encLog, `Packing ${rawTotalBytes.toLocaleString()} bytes into ${pxSize}x${pxSize} DLN1 frames (cap ${maxPayloadBytes.toLocaleString()}B/frame)...`);
+    await tick();
+
+    // Slice string cleanly into chunks whose deflated bytes fit inside maxPayloadBytes
+    const textChunks = [];
+    let cursor = 0;
+    let stepChars = Math.max(256, Math.floor(maxPayloadBytes * 1.4));
+
+    while (cursor < fullText.length) {
+      let end = Math.min(fullText.length, cursor + stepChars);
+      let slice = fullText.slice(cursor, end);
+      let comp = await deflateRawStream(new TextEncoder().encode(slice));
+
+      while (comp.length > maxPayloadBytes && slice.length > 1) {
+        end = cursor + Math.max(1, Math.floor(slice.length * 0.75));
+        slice = fullText.slice(cursor, end);
+        comp = await deflateRawStream(new TextEncoder().encode(slice));
+      }
+      if (comp.length > maxPayloadBytes) {
+        throw new Error("Single character exceeded frame capacity.");
+      }
+      textChunks.push({ slice, comp });
+      cursor = end;
+    }
+
+    const totalFrames = textChunks.length;
+    let totalJpgBytes = 0;
+
+    for (let i = 0; i < totalFrames; i++) {
+      const { slice, comp } = textChunks[i];
+      const hdr = new Uint8Array(8);
+      hdr.set([0x44, 0x4c, 0x4e, 0x31]); // "DLN1"
+      new DataView(hdr.buffer).setUint32(4, comp.length, false);
+      const framePayload = concatBytes([hdr, comp]);
+
+      const partName = `dln1_part${String(i + 1).padStart(2, "0")}of${String(totalFrames).padStart(2, "0")}.jpg`;
+      const fr = await renderDln1JpegFrame(framePayload, pxSize, partName);
+
+      // Immediate round-trip verification through the decoder
+      const check = await decodeSingleBlob(fr.blob, partName);
+      if (check.text !== slice) {
+        throw new Error(`Round-trip verification mismatch on ${partName}`);
+      }
+
+      encodedFrames.push(fr);
+      totalJpgBytes += fr.jpegBytes.length;
+      appendLog(encLog, `[VERIFIED] ${partName} (${pxSize}x${pxSize}, ${(fr.jpegBytes.length / 1024).toFixed(1)} KB JPEG) -> ${slice.length} chars OK`, "ok");
+      await tick();
+    }
+
+    const pdfBytes = buildMultiPageJpegPdf(encodedFrames);
+    generatedPdfBlob = new Blob([pdfBytes], { type: "application/pdf" });
+
+    document.getElementById("encParts").textContent = totalFrames;
+    document.getElementById("encRawBytes").textContent = rawTotalBytes.toLocaleString();
+    document.getElementById("encJpgBytes").textContent = totalJpgBytes.toLocaleString();
+
+    for (const fr of encodedFrames) {
+      const card = document.createElement("div");
+      card.className = "frame-item";
+      card.innerHTML = `<img src="${fr.url}" alt="${fr.name}"><small>${fr.name}<br>${(fr.jpegBytes.length / 1024).toFixed(1)} KB</small>`;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "Download JPEG";
+      btn.addEventListener("click", () => triggerDownload(fr.blob, fr.name));
+      card.appendChild(btn);
+      framesGrid.appendChild(card);
+    }
+
+    encOutCard.style.display = "block";
+    appendLog(encLog, `DONE: ${totalFrames} JPEG frame(s) + multi-page PDF (${(pdfBytes.length / 1024).toFixed(1)} KB) ready.`, "ok");
+  } catch (err) {
+    appendLog(encLog, `[ERR] ${err.message}`, "err");
+  } finally {
+    btnEncode.disabled = false;
+  }
+});
+
+document.getElementById("btnDlPdf").addEventListener("click", () => {
+  if (!generatedPdfBlob) return;
+  triggerDownload(generatedPdfBlob, `dln1_bundle_${encodedFrames.length}pages.pdf`);
+});
+
+document.getElementById("btnDlAllJpg").addEventListener("click", async () => {
+  for (const fr of encodedFrames) {
+    triggerDownload(fr.blob, fr.name);
+    await new Promise(r => setTimeout(r, 250));
+  }
+});
+
+btnEncClear.addEventListener("click", () => {
+  encFileInput.value = "";
+  encFileList.textContent = "No files selected.";
+  encPasteText.value = "";
+  cleanupEncodedFrames();
+  document.getElementById("encParts").textContent = "0";
+  document.getElementById("encRawBytes").textContent = "0";
+  document.getElementById("encJpgBytes").textContent = "0";
+  encLog.textContent = "Cleared.";
 });
 </script>
 </body>
